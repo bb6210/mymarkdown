@@ -1,0 +1,19 @@
+# 依赖与构建产物
+node_modules/
+dist/
+dist-electron/
+release/
+*.tsbuildinfo
+
+# 日志
+*.log
+npm-debug.log*
+
+# 个人/机器相关配置
+.npmrc
+.vscode/
+*.local
+
+# Windows 系统文件
+Thumbs.db
+Desktop.ini

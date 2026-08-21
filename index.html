@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file: https: app:; font-src 'self' data:; connect-src 'self' ws: http://localhost:*"
+    />
+    <title>MyMarkdown</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          MyMarkdown
+        </div>
+        <div class="topbar-actions">
+          <button id="btn-open-folder" class="btn" title="打开文件夹 (Ctrl+O)">打开文件夹</button>
+          <button id="btn-new-file" class="btn" title="新建文件 (Ctrl+N)">新建</button>
+          <button id="btn-save" class="btn" title="保存 (Ctrl+S)" disabled>保存</button>
+          <div class="export-group">
+            <button id="btn-export" class="btn" title="导出" disabled>导出 ▾</button>
+            <div id="export-menu" class="menu hidden">
+              <button data-kind="md">导出 Markdown…</button>
+              <button data-kind="html-copy">导出 HTML（图片复制到 assets/）…</button>
+              <button data-kind="html-inline">导出 HTML（图片内联）…</button>
+              <button data-kind="pdf">导出 PDF…</button>
+            </div>
+          </div>
+          <button id="btn-settings" class="btn" title="设置 (Ctrl+,)">⚙️</button>
+          <button id="btn-community-open" class="btn" title="打开社区网站">进入社区</button>
+
+        </div>
+        <div id="current-file" class="current-file"></div>
+      </header>
+
+      <main id="workspace">
+        <aside id="sidebar">
+          <div class="sidebar-tabs">
+            <button type="button" id="tab-files" class="sidebar-tab active">文件</button>
+            <button type="button" id="tab-outline" class="sidebar-tab">大纲</button>
+          </div>
+          <div class="sidebar-header" id="folder-header">
+            <span id="folder-name">未打开文件夹</span>
+          </div>
+          <div id="file-tree" class="file-tree"></div>
+          <div id="outline-panel" class="outline-panel hidden"></div>
+        </aside>
+        <div id="sidebar-resizer" class="sidebar-resizer" title="拖动调整宽度"></div>
+        <section id="content">
+          <div id="welcome" class="welcome hidden">
+            <div class="welcome-card">
+              <h1>MyMarkdown</h1>
+              <p class="welcome-sub">Typora 风格的所见即所得 Markdown 编辑器</p>
+              <button id="btn-welcome-open" class="btn btn-primary">📂 打开文件夹</button>
+              <ul class="welcome-features">
+                <li>输入即渲染：标题、加粗、列表、代码块、表格、任务清单…</li>
+                <li>自动保存，导出 Markdown / HTML / PDF</li>
+                <li>亮色 / 深色主题，Ctrl+S 保存、Ctrl+O 打开文件夹</li>
+              </ul>
+            </div>
+          </div>
+          <div id="editor-wrap" class="editor-wrap hidden">
+            <div id="find-bar" class="find-bar hidden">
+              <div class="find-row">
+                <input id="find-input" type="text" placeholder="查找" spellcheck="false" />
+                <span id="find-count" class="find-count"></span>
+                <button type="button" id="find-prev" title="上一个 (Shift+Enter)">↑</button>
+                <button type="button" id="find-next" title="下一个 (Enter)">↓</button>
+                <button type="button" id="find-replace-toggle" title="替换 (Ctrl+H)">替换</button>
+                <button type="button" id="find-close" title="关闭 (Esc)">×</button>
+              </div>
+              <div id="find-replace-row" class="find-replace-row hidden">
+                <input id="find-replace-input" type="text" placeholder="替换为" spellcheck="false" />
+                <button type="button" id="find-replace-one">替换</button>
+                <button type="button" id="find-replace-all">全部替换</button>
+              </div>
+            </div>
+            <div class="format-bar" id="format-bar">
+              <button type="button" data-fmt="h1" title="一级标题">H1</button>
+              <button type="button" data-fmt="h2" title="二级标题">H2</button>
+              <button type="button" data-fmt="h3" title="三级标题">H3</button>
+              <button type="button" data-fmt="h4" title="四级标题">H4</button>
+              <button type="button" data-fmt="h5" title="五级标题">H5</button>
+              <button type="button" data-fmt="h6" title="六级标题">H6</button>
+              <button type="button" data-fmt="paragraph" title="正文">正文</button>
+              <button type="button" data-fmt="fontsize" title="字号（选中文字局部设置，标题同样生效；无选区时应用于整个段落）">字号</button>
+              <span class="fmt-sep"></span>
+              <button type="button" data-fmt="indent" title="首行缩进两字符">首行缩进</button>
+              <button type="button" data-fmt="dropcap" title="段落首字下坠两行">首字下沉</button>
+              <span class="fmt-sep"></span>
+              <button type="button" data-fmt="bold" class="fmt-bold" title="加粗 (Ctrl+B)">B</button>
+              <button type="button" data-fmt="italic" class="fmt-italic" title="斜体 (Ctrl+I)">I</button>
+              <button type="button" data-fmt="strike" class="fmt-strike" title="删除线">S</button>
+              <span class="fmt-sep"></span>
+              <button type="button" data-fmt="sup" title="上标（次方，选中后转换，如 x²）">X²</button>
+              <button type="button" data-fmt="sub" title="下标（选中后转换，如 log₂）">X₂</button>
+              <button type="button" data-fmt="math" title="数学符号（点击选择插入）">∑</button>
+              <span class="fmt-sep"></span>
+              <button type="button" data-fmt="code" title="行内代码">代码</button>
+              <button type="button" data-fmt="quote" title="引用块">引用</button>
+              <button type="button" data-fmt="codeblock" title="代码块">代码块</button>
+              <span class="fmt-sep"></span>
+              <button type="button" data-fmt="ul" title="无序列表">无序列表</button>
+              <button type="button" data-fmt="ol" title="有序列表">有序列表</button>
+              <button type="button" data-fmt="hr" title="分隔线">—</button>
+              <span class="fmt-sep"></span>
+              <button type="button" data-fmt="link" title="插入链接">链接</button>
+              <button type="button" data-fmt="table" title="插入表格">表格</button>
+            </div>
+            <div id="editor"></div>
+          </div>
+          <div id="settings-view" class="settings-view hidden"></div>
+        </section>
+      </main>
+
+      <footer id="statusbar" class="statusbar">
+        <span id="stat-count" class="stat"></span>
+        <span id="stat-save" class="stat stat-save"></span>
+        <span id="stat-path" class="stat stat-path"></span>
+      </footer>
+    </div>
+
+    <div id="context-menu" class="menu hidden"></div>
+    <div id="modal-mask" class="modal-mask hidden">
+      <div id="modal" class="modal" role="dialog" aria-modal="true"></div>
+    </div>
+    <div id="toast" class="toast"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

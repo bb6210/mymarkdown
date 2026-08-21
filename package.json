@@ -1,0 +1,52 @@
+{
+  "name": "mymarkdown",
+  "version": "0.1.0",
+  "description": "MyMarkdown - Typora 风格的所见即所得 Markdown 桌面编辑器",
+  "main": "dist-electron/electron/main.js",
+  "private": true,
+  "author": "MyMarkdown",
+  "license": "MIT",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build:electron": "tsc -p electron/tsconfig.json",
+    "build:renderer": "vite build",
+    "build": "npm run build:electron && npm run build:renderer",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win"
+  },
+
+  "devDependencies": {
+    "@milkdown/kit": "^7.22.1",
+    "@milkdown/theme-nord": "^7.22.1",
+    "@types/node": "^26.2.0",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1"
+  },
+  "build": {
+    "appId": "com.mymarkdown.app",
+    "productName": "MyMarkdown",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**"
+    ],
+    "npmRebuild": false,
+    "fileAssociations": [
+      { "ext": "md", "name": "Markdown", "description": "Markdown 文档", "role": "Editor" },
+      { "ext": "markdown", "name": "Markdown", "description": "Markdown 文档", "role": "Editor" }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
