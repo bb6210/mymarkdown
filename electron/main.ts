@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { Dirent } from 'node:fs';
 import { existsSync } from 'node:fs';
+import { autoUpdater } from 'electron-updater';
 import type {
   CommunityAuth,
   CommunityLoginResult,
@@ -12,6 +13,7 @@ import type {
   FileEntry,
   ThemeExportPayload,
   ThemeImportResult,
+  UpdateEvent,
 } from '../shared/api';
 
 const APP_SCHEME = 'app';
@@ -277,6 +279,58 @@ function createWindow(): void {
   });
 }
 
+function registerUpdater(): void {
+  const feedUrl = 'http://47.97.29.11:4000/updates';
+  autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl });
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  const sendUpdate = (event: UpdateEvent): void => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update', event);
+    }
+  };
+
+  autoUpdater.on('checking-for-update', () => sendUpdate({ type: 'checking' }));
+  autoUpdater.on('update-available', (info) => sendUpdate({ type: 'available', version: info.version }));
+  autoUpdater.on('update-not-available', () => sendUpdate({ type: 'not-available' }));
+  autoUpdater.on('download-progress', (progress) => sendUpdate({ type: 'downloading', percent: Math.round(progress.percent) }));
+  autoUpdater.on('update-downloaded', (info) => sendUpdate({ type: 'downloaded', version: info.version }));
+  autoUpdater.on('error', (error) => sendUpdate({ type: 'error', message: error?.message ?? String(error) }));
+
+  ipcMain.handle('update:check', async (): Promise<boolean> => {
+    if (!app.isPackaged) {
+      sendUpdate({ type: 'error', message: '开发模式不支持自动更新' });
+      return false;
+    }
+    try {
+      await autoUpdater.checkForUpdates();
+      return true;
+    } catch (error) {
+      console.error('[updater] check', error);
+      return false;
+    }
+  });
+  ipcMain.handle('update:download', async (): Promise<boolean> => {
+    try {
+      await autoUpdater.downloadUpdate();
+      return true;
+    } catch (error) {
+      console.error('[updater] download', error);
+      return false;
+    }
+  });
+  ipcMain.handle('update:install', async (): Promise<void> => {
+    autoUpdater.quitAndInstall();
+  });
+
+  setTimeout(() => {
+    if (!app.isPackaged) return;
+    void autoUpdater.checkForUpdates().catch((error) => {
+      console.error('[updater] startup check', error);
+    });
+  }, 8000);
+}
 function buildMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     {
@@ -316,6 +370,12 @@ function buildMenu(): void {
         { type: 'separator' },
         { label: '重新加载', role: 'reload' },
         { label: '开发者工具', role: 'toggleDevTools' },
+      ],
+    },
+    {
+      label: '帮助',
+      submenu: [
+        { label: '检查更新', click: () => sendMenuAction('check-update') },
       ],
     },
   ];
@@ -974,6 +1034,7 @@ if (!gotTheLock) {
     app.setAppUserModelId('com.mymarkdown.desktop');
     registerAppProtocol();
     registerIpc();
+    registerUpdater();
     buildMenu();
     createWindow();
 

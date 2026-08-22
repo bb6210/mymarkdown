@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { MarkdownApi } from '../shared/api';
+import type { MarkdownApi, UpdateEvent } from '../shared/api';
 
 const api: MarkdownApi = {
   openFolder: () => ipcRenderer.invoke('dialog:openFolder'),
@@ -30,6 +30,12 @@ const api: MarkdownApi = {
   clearCommunityAuth: () => ipcRenderer.invoke('community:clearAuth'),
   publishToCommunity: (auth, payload) => ipcRenderer.invoke('community:publish', auth, payload),
   openCommunityBrowser: (url) => ipcRenderer.invoke('community:openBrowser', url),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  quitAndInstall: () => ipcRenderer.invoke('update:install'),
+  onUpdate: (callback) => {
+    ipcRenderer.on('update', (_event, event: UpdateEvent) => callback(event));
+  },
   onMenu: (callback) => {
     ipcRenderer.on('menu', (_event, action: string) => callback(action));
   },

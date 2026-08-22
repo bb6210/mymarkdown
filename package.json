@@ -1,6 +1,6 @@
 {
   "name": "mymarkdown",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "MyMarkdown - Typora 风格的所见即所得 Markdown 桌面编辑器",
   "main": "dist-electron/electron/main.js",
   "private": true,
@@ -14,7 +14,6 @@
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder --win"
   },
-
   "devDependencies": {
     "@milkdown/kit": "^7.22.1",
     "@milkdown/theme-nord": "^7.22.1",
@@ -25,6 +24,10 @@
     "vite": "^8.2.1"
   },
   "build": {
+    "publish": {
+      "provider": "generic",
+      "url": "http://47.97.29.11:4000/updates"
+    },
     "appId": "com.mymarkdown.app",
     "productName": "MyMarkdown",
     "directories": {
@@ -36,8 +39,18 @@
     ],
     "npmRebuild": false,
     "fileAssociations": [
-      { "ext": "md", "name": "Markdown", "description": "Markdown 文档", "role": "Editor" },
-      { "ext": "markdown", "name": "Markdown", "description": "Markdown 文档", "role": "Editor" }
+      {
+        "ext": "md",
+        "name": "Markdown",
+        "description": "Markdown 文档",
+        "role": "Editor"
+      },
+      {
+        "ext": "markdown",
+        "name": "Markdown",
+        "description": "Markdown 文档",
+        "role": "Editor"
+      }
     ],
     "win": {
       "target": "nsis"
@@ -48,5 +61,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

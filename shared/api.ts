@@ -83,6 +83,20 @@ export interface ThemeImportResult {
   bgImageBase64?: string | null;
 }
 
+export type UpdateEventType =
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error';
+
+export interface UpdateEvent {
+  type: UpdateEventType;
+  version?: string;
+  percent?: number;
+  message?: string;
+}
 export interface MarkdownApi {
   openFolder(): Promise<string | null>;
   readDir(dir: string): Promise<FileEntry[]>;
@@ -111,6 +125,10 @@ export interface MarkdownApi {
   clearCommunityAuth(): Promise<boolean>;
   publishToCommunity(auth: CommunityAuth, payload: CommunityPublishPayload): Promise<CommunityPublishResult>;
   openCommunityBrowser(url: string): Promise<void>;
+  checkForUpdates(): Promise<boolean>;
+  downloadUpdate(): Promise<boolean>;
+  quitAndInstall(): Promise<void>;
+  onUpdate(callback: (event: UpdateEvent) => void): void;
   onMenu(callback: (action: string) => void): void;
   onOpenFile(callback: (path: string) => void): void;
 }

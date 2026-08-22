@@ -40,6 +40,7 @@ import {
   updateImageSrc,
 } from './editor';
 import { FileTree, type TreeCallbacks } from './tree';
+import { checkForUpdates, initUpdater } from './updater';
 import { basename, buildExportHtml, countStats, dirname, escapeHtml, inlineImagesInHtml } from './export';
 import { applySettingsToDom, getSettings, resetSettings, resetSettingsGroup, saveSettings, subscribeSettings, type AppSettings, type SettingsGroup } from './settings';
 import { activateTheme, applyTheme, createTheme, deleteTheme, getActiveTheme, getTheme, listThemes, saveTheme, MAX_BG_DATA_LEN, type ThemeDef } from './themes';
@@ -3905,6 +3906,9 @@ function bindEvents(): void {
       case 'export-theme':
         void exportThemeFlow();
         break;
+      case 'check-update':
+        checkForUpdates(window.api);
+        break;
       case 'toggle-theme':
         toggleTheme();
         break;
@@ -4021,4 +4025,5 @@ async function init(): Promise<void> {
 }
 
 window.api.onOpenFile((path) => handleOsOpenFile(path));
+initUpdater(window.api);
 void init();
