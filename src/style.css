@@ -240,7 +240,29 @@ body {
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
 }
-#workspace > * {
+/* 软件背景视频：与背景图共用透明度/位置/左右淡出遮罩 */
+#theme-bg-video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  object-fit: cover;
+  object-position: var(--bg-image-pos, center);
+  opacity: var(--bg-image-opacity, 0.2);
+  -webkit-mask-image: var(--bg-mask, none);
+  mask-image: var(--bg-mask, none);
+  -webkit-mask-size: var(--bg-mask-size, auto);
+  mask-size: var(--bg-mask-size, auto);
+  -webkit-mask-position: var(--bg-image-pos, center);
+  mask-position: var(--bg-image-pos, center);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  background: transparent;
+}
+#workspace > :not(#theme-bg-video) {
   position: relative;
   z-index: 1;
 }
@@ -725,7 +747,28 @@ body.dark .stat-save[data-kind="saved"] { color: var(--success); }
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
 }
-.settings-pane .settings-row { border-bottom: 1px solid var(--border); }
+.bg-image-preview video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: var(--bg-image-pos, center);
+  opacity: var(--bg-image-opacity, 0.2);
+  -webkit-mask-image: var(--bg-mask, none);
+  mask-image: var(--bg-mask, none);
+  -webkit-mask-size: var(--bg-mask-size, auto);
+  mask-size: var(--bg-mask-size, auto);
+  -webkit-mask-position: var(--bg-image-pos, center);
+  mask-position: var(--bg-image-pos, center);
+  pointer-events: none;
+}
+.settings-hint {
+  margin: 6px 0 2px;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}.settings-pane .settings-row { border-bottom: 1px solid var(--border); }
 .settings-pane .settings-row:last-child { border-bottom: none; }
 
 /* ---------- 设置页：代码块 / 表格演示 ---------- */

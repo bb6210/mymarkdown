@@ -3,6 +3,8 @@
  * 旧版散落的键（theme / sidebarWidth / imageStoreMode）首次加载时自动迁移。
  */
 
+import { MAX_BG_VIDEO_DATA_LEN } from '../shared/api';
+
 export type ThemeMode = 'light' | 'dark';
 export type ImageStoreMode = 'assets' | 'same' | 'file';
 export type SaveMode = 'auto' | 'manual';
@@ -47,6 +49,10 @@ export interface AppSettings {
   bgImagePos: 'left' | 'center' | 'right';
   /** 背景图字节（data URL），路径失效时兜底显示用 */
   bgImageData: string | null;
+  /** 软件背景视频绝对路径（null=未设置） */
+  bgVideo: string | null;
+  /** 背景视频字节（data URL），路径失效时兜底 */
+  bgVideoData: string | null;
 }
 
 const SETTINGS_KEY = 'settings';
@@ -69,6 +75,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoSaveMinutes: 5,
   bgImage: null,
   bgImageData: null,
+  bgVideo: null,
+  bgVideoData: null,
   bgImageOpacity: 20,
   themeBrightness: 100,
   bgImagePos: 'center',
@@ -133,6 +141,13 @@ function normalizeSettings(raw: unknown): AppSettings {
     bgImage: typeof obj.bgImage === 'string' && obj.bgImage.trim() ? obj.bgImage : null,
     bgImageData:
       typeof obj.bgImageData === 'string' && obj.bgImageData.startsWith('data:image/') ? obj.bgImageData : null,
+    bgVideo: typeof obj.bgVideo === 'string' && obj.bgVideo.trim() ? obj.bgVideo : null,
+    bgVideoData:
+      typeof obj.bgVideoData === 'string' &&
+      obj.bgVideoData.startsWith('data:video/') &&
+      obj.bgVideoData.length <= MAX_BG_VIDEO_DATA_LEN
+        ? obj.bgVideoData
+        : null,
     bgImageOpacity: clampInt(obj.bgImageOpacity, 0, 100, DEFAULT_SETTINGS.bgImageOpacity),
     themeBrightness: clampInt(obj.themeBrightness, 50, 150, DEFAULT_SETTINGS.themeBrightness),
     bgImagePos: obj.bgImagePos === 'left' || obj.bgImagePos === 'right' ? obj.bgImagePos : 'center',
@@ -143,7 +158,22 @@ let cached: AppSettings | null = null;
 const listeners = new Set<(settings: AppSettings) => void>();
 
 function persist(): void {
-  if (cached) localStorage.setItem(SETTINGS_KEY, JSON.stringify(cached));
+  if (!cached) return;
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(cached));
+  } catch (error) {
+    // localStorage 配额不足（多为超大内嵌视频/图片）：丢弃内嵌字节后重试，避免设置页打不开
+    console.error('[settings] persist failed, dropping embedded media', error);
+    if (cached.bgVideoData || cached.bgImageData) {
+      cached.bgVideoData = null;
+      cached.bgImageData = null;
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(cached));
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }
 
 // 迁移旧版单键存储，迁移后删除旧键
@@ -206,7 +236,7 @@ export function resetSettings(): AppSettings {
 export type SettingsGroup = 'appearance' | 'codeblock' | 'table' | 'image' | 'save';
 
 const GROUP_KEYS: Record<SettingsGroup, (keyof AppSettings)[]> = {
-  appearance: ['editorWidth', 'sidebarWidth', 'defaultFontSize', 'bgImage', 'bgImageData', 'bgImageOpacity', 'bgImagePos'],
+  appearance: ['editorWidth', 'sidebarWidth', 'defaultFontSize', 'bgImage', 'bgImageData', 'bgVideo', 'bgVideoData', 'bgImageOpacity', 'bgImagePos'],
   codeblock: ['codeLineNumbers', 'codeZebraOpacity', 'codeZebraColorA', 'codeZebraColorB', 'codeFontSize'],
   table: ['tableColorA', 'tableColorB', 'tableSizePersist'],
   image: ['imageStoreMode'],
@@ -228,6 +258,139 @@ export function resetSettingsGroup(group: SettingsGroup): AppSettings {
 // 把设置应用到页面：主题、编辑区宽度、侧栏宽度、代码块行号/斑马纹/字号、正文字号
 // 变量统一写到 body 行内样式：CSS 变量是继承属性，body.dark 里的同名变量会遮蔽
 // 从 html 继承的值，导致深色主题下设置不生效，因此必须覆盖在最近的公共祖先上。
+/** 背景视频层：与背景图共用透明度/位置/左右淡出遮罩（CSS 变量继承自 #workspace） */
+// 背景视频不走 app://bundle/fs 自定义协议（媒体流的 Range 处理不可靠），
+// 改为 IPC 读入文件字节生成 Blob URL，保证 H.264/webm 等可正常播放。
+let bgVideoBlobUrl: string | null = null;
+let bgVideoBlobKey = '';
+function revokeBgVideoBlob(): void {
+  if (bgVideoBlobUrl) {
+    URL.revokeObjectURL(bgVideoBlobUrl);
+    bgVideoBlobUrl = null;
+  }
+  bgVideoBlobKey = '';
+}
+
+let bgVideoLoading: Promise<string | null> | null = null;
+
+/** 解析背景视频的可播放 URL：内嵌 data URL 或 Blob URL（按路径缓存 + 并发去重） */
+export async function loadBgVideoSource(): Promise<string | null> {
+  const s = getSettings();
+  if (s.bgVideoData) {
+    if (bgVideoBlobUrl) revokeBgVideoBlob();
+    return s.bgVideoData;
+  }
+  if (!s.bgVideo) {
+    if (bgVideoBlobUrl) revokeBgVideoBlob();
+    return null;
+  }
+  if (bgVideoBlobUrl && bgVideoBlobKey === s.bgVideo) return bgVideoBlobUrl;
+  // 并发去重：主背景 / 遮罩计算 / 设置预览可能同时调用，
+  // 若各自读文件并 revoke，会把对方正在播放的 blob 提前失效（MEDIA_ELEMENT_ERROR: Format error）
+  const videoPath = s.bgVideo;
+  if (bgVideoLoading) return bgVideoLoading;
+  bgVideoLoading = (async () => {
+    try {
+      const r = await window.api.readVideoFile(videoPath);
+      if (!r || !r.data || r.data.byteLength === 0) {
+        console.warn('[bg-video] readVideoFile empty/failed for', videoPath);
+        return null;
+      }
+      // 加载期间设置可能已变更，丢弃过期结果
+      const current = getSettings();
+      if (current.bgVideo !== videoPath) return null;
+      if (bgVideoBlobUrl && bgVideoBlobKey === videoPath) return bgVideoBlobUrl;
+      revokeBgVideoBlob();
+      const bytes = new Uint8Array(r.data);
+      bgVideoBlobUrl = URL.createObjectURL(new Blob([bytes], { type: r.type }));
+      bgVideoBlobKey = videoPath;
+      return bgVideoBlobUrl;
+    } catch (error) {
+      console.error('[bg-video] readVideoFile failed', error);
+      return null;
+    } finally {
+      bgVideoLoading = null;
+    }
+  })();
+  return bgVideoLoading;
+}
+
+let bgVideoSyncSeq = 0;
+async function syncBgVideo(settings: AppSettings): Promise<void> {
+  const workspace = document.getElementById('workspace');
+  if (!workspace) return;
+  const seq = ++bgVideoSyncSeq;
+  const src = await loadBgVideoSource();
+  if (seq !== bgVideoSyncSeq) return; // 设置已再次变更，丢弃过期结果
+  let video = document.getElementById('theme-bg-video') as HTMLVideoElement | null;
+  if (!src) {
+    if (video) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      video.remove();
+    }
+    return;
+  }
+  if (!video) {
+    video = document.createElement('video');
+    video.id = 'theme-bg-video';
+    video.muted = true;
+    video.loop = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.setAttribute('disablepictureinpicture', '');
+    video.addEventListener('error', () => {
+      const code = video?.error?.code ?? -1;
+      const name = settings.bgVideo ? String(settings.bgVideo.split(/[\\/]/).pop() || settings.bgVideo) : '背景视频';
+      const hint =
+        code === 4
+          ? '视频格式/编码不受支持（错误码4），请转成 H.264 的 mp4 或 webm'
+          : code === 2
+            ? '视频读取失败（错误码2）：文件可能被移动、占用或过大'
+            : code === 3
+              ? '视频解码失败（错误码3）：编码不受支持，请转成 H.264 的 mp4'
+              : code === 1
+                ? '视频加载被中断（错误码1），请重试'
+                : '视频加载失败（错误码' + code + '），请重试';
+      console.warn('[bg-video] load error', code, video?.error?.message, src.slice(0, 120));
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: '「' + name + '」' + hint }));
+      video?.remove();
+    });
+    video.addEventListener('loadeddata', () => {
+      console.log('[bg-video] loadeddata readyState=' + (video?.readyState ?? -1) + ' size=' + (video?.videoWidth ?? 0) + 'x' + (video?.videoHeight ?? 0));
+    });
+    workspace.appendChild(video);
+  }
+  if (video.getAttribute('src') !== src) {
+    console.log('[bg-video] set src=', src.startsWith('data:') ? 'data:' + src.length + ' chars' : src);
+    try {
+      video.src = src;
+    } catch (error) {
+      console.error('[bg-video] failed to set src', error);
+      video?.remove();
+      return;
+    }
+  }
+  if (!document.hidden && video.isConnected) {
+    video.play().then(() => {
+      console.log('[bg-video] playing ' + video.videoWidth + 'x' + video.videoHeight);
+    }).catch((err) => {
+      console.warn('[bg-video] play failed', (err as Error | undefined)?.name, (err as Error | undefined)?.message);
+    });
+  }
+}
+
+/** 窗口最小化/隐藏时暂停背景视频，恢复后继续播放 */
+export function bindBgVideoVisibility(): void {
+  document.addEventListener('visibilitychange', () => {
+    const video = document.getElementById('theme-bg-video') as HTMLVideoElement | null;
+    if (!video || !video.src) return;
+    if (document.hidden) video.pause();
+    else if (video.isConnected) void video.play().catch(() => undefined);
+  });
+}
 export function applySettingsToDom(settings: AppSettings): void {
   const dark = settings.theme === 'dark';
   document.body.classList.toggle('dark', dark);
@@ -267,16 +430,20 @@ export function applySettingsToDom(settings: AppSettings): void {
   else bodyStyle.setProperty('--code-bg', scaleRgba(base.codeBg, brightnessFactor));
   const workspace = document.getElementById('workspace');
   if (workspace) {
-    const bgUrl = settings.bgImageData
-      ? 'url("' + settings.bgImageData + '")'
-      : settings.bgImage
-        ? 'url("app://bundle/fs/' + encodeURIComponent(settings.bgImage) + '")'
-        : 'none';
-    const hasBg = bgUrl !== 'none';
+    const hasVideo = Boolean(settings.bgVideoData || settings.bgVideo);
+    const bgUrl = hasVideo
+      ? 'none'
+      : settings.bgImageData
+        ? 'url("' + settings.bgImageData + '")'
+        : settings.bgImage
+          ? 'url("app://bundle/fs/' + encodeURIComponent(settings.bgImage) + '")'
+          : 'none';
+    const hasBg = bgUrl !== 'none' || hasVideo;
     workspace.style.setProperty('--bg-image', bgUrl);
     workspace.style.setProperty('--bg-sidebar-mask', hasBg ? 'transparent' : 'var(--bg-sidebar)');
     workspace.style.setProperty('--bg-content-mask', hasBg ? 'transparent' : 'var(--bg-editor)');
     workspace.style.setProperty('--bg-image-opacity', String(settings.bgImageOpacity / 100));
     workspace.style.setProperty('--bg-image-pos', settings.bgImagePos);
   }
+  void syncBgVideo(settings);
 }

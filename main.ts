@@ -42,8 +42,8 @@ import {
 import { FileTree, type TreeCallbacks } from './tree';
 import { checkForUpdates, initUpdater } from './updater';
 import { basename, buildExportHtml, countStats, dirname, escapeHtml, inlineImagesInHtml } from './export';
-import { applySettingsToDom, bindBgVideoVisibility, getSettings, loadBgVideoSource, resetSettings, resetSettingsGroup, saveSettings, subscribeSettings, type AppSettings, type SettingsGroup } from './settings';
-import { activateTheme, applyTheme, createTheme, deleteTheme, getActiveTheme, getTheme, listThemes, resetAllThemes, restoreThemeBaseline, saveTheme, setBaselineToCurrent, MAX_BG_DATA_LEN, MAX_BG_VIDEO_DATA_LEN, type ThemeDef } from './themes';
+import { applySettingsToDom, getSettings, resetSettings, resetSettingsGroup, saveSettings, subscribeSettings, type AppSettings, type SettingsGroup } from './settings';
+import { activateTheme, applyTheme, createTheme, deleteTheme, getActiveTheme, getTheme, listThemes, saveTheme, MAX_BG_DATA_LEN, type ThemeDef } from './themes';
 import type { ExportResult } from '../shared/api';
 
 declare global {
@@ -89,14 +89,6 @@ let folderOpenRunning: Promise<void> = Promise.resolve();
 let lastSetMarkdown: string | null = null;
 let clipboardEntry: { path: string; name: string; isDir: boolean } | null = null;
 let selectedImagePos: number | null = null;
-
-// 全局错误日志：渲染进程异常会转发到主进程终端，便于定位「按钮无响应」类问题
-window.addEventListener('error', (event) => {
-  console.error('[renderer-error]', event.message, event.filename + ':' + event.lineno + ':' + event.colno, event.error?.stack ?? '');
-});
-window.addEventListener('unhandledrejection', (event) => {
-  console.error('[renderer-rejection]', String(event.reason), (event.reason as Error | undefined)?.stack ?? '');
-});
 
 // 粗略检测二进制/非文本内容：前 8KB 里控制字符较多即视为二进制
 function looksBinary(text: string): boolean {
@@ -2078,33 +2070,14 @@ function loadBgImageSize(path: string | null): Promise<{ w: number; h: number } 
   });
 }
 
-function loadBgVideoSize(url: string | null): Promise<{ w: number; h: number } | null> {
-  if (!url) return Promise.resolve(null);
-  if (url.startsWith('data:') && url.length > MAX_BG_VIDEO_DATA_LEN) return Promise.resolve(null);
-  const cached = bgImageSizeCache.get(url);
-  if (cached) return Promise.resolve(cached);
-  return new Promise((resolve) => {
-    const v = document.createElement('video');
-    v.preload = 'metadata';
-    v.muted = true;
-    v.onloadedmetadata = () => {
-      const size = { w: v.videoWidth, h: v.videoHeight };
-      bgImageSizeCache.set(url, size);
-      resolve(size);
-    };
-    v.onerror = () => resolve(null);
-    v.src = url;
-  });
-}
-function applyBgMaskTo(el: HTMLElement, size: { w: number; h: number } | null, contW: number, contH: number, cover = false): void {
+function applyBgMaskTo(el: HTMLElement, size: { w: number; h: number } | null, contW: number, contH: number): void {
   if (!size || size.w <= 0 || size.h <= 0 || contW <= 0 || contH <= 0) {
     el.style.removeProperty('--bg-mask');
     el.style.removeProperty('--bg-mask-size');
     return;
   }
-  // 背景按高度铺满：渲染宽度 = 容器高度 × 宽高比；cover 模式（视频背景）按实际显示宽度计算
-  const ratio = size.w / size.h;
-  const imgW = cover ? Math.max(contW, contH * ratio) : contH * ratio;
+  // 背景按高度铺满：渲染宽度 = 容器高度 × 宽高比
+  const imgW = contH * (size.w / size.h);
   const pct = Math.round(BG_IMAGE_FADE * 100);
   el.style.setProperty('--bg-mask-size', imgW + 'px 100%');
   el.style.setProperty(
@@ -2119,60 +2092,13 @@ function applyBgImageMask(): void {
   bgMaskRaf = requestAnimationFrame(() => {
     void (async () => {
       const settings = getSettings();
-      const hasVideo = Boolean(settings.bgVideoData || settings.bgVideo);
-      const size = hasVideo
-        ? await loadBgVideoSize(await loadBgVideoSource())
-        : await loadBgImageSize(settings.bgImage);
+      const size = await loadBgImageSize(settings.bgImage);
       const workspace = document.getElementById('workspace');
-      if (workspace) applyBgMaskTo(workspace, size, workspace.clientWidth, workspace.clientHeight, hasVideo);
+      if (workspace) applyBgMaskTo(workspace, size, workspace.clientWidth, workspace.clientHeight);
       const preview = document.querySelector<HTMLElement>('.bg-image-preview');
-      if (preview) applyBgMaskTo(preview, size, preview.clientWidth, preview.clientHeight, hasVideo);
+      if (preview) applyBgMaskTo(preview, size, preview.clientWidth, preview.clientHeight);
     })();
   });
-}
-/** 设置面板背景预览：有视频时插入 video 预览层 */
-async function syncBgPreviewVideo(modal: HTMLElement): Promise<void> {
-  const preview = modal.querySelector<HTMLElement>('.bg-image-preview');
-  if (!preview) return;
-  const s = getSettings();
-  const src = s.bgVideoData ? s.bgVideoData : s.bgVideo ? await loadBgVideoSource() : '';
-  let v = preview.querySelector<HTMLVideoElement>('video');
-  if (!src) {
-    if (v) {
-      v.pause();
-      v.removeAttribute('src');
-      v.load();
-      v.remove();
-    }
-    return;
-  }
-  if (!v) {
-    v = document.createElement('video');
-    v.muted = true;
-    v.loop = true;
-    v.autoplay = true;
-    v.playsInline = true;
-    v.preload = 'auto';
-    v.setAttribute('disablepictureinpicture', '');
-    v.addEventListener('error', () => {
-      console.warn('[bg-video-preview] load error', v?.error?.code, v?.error?.message, src.slice(0, 120));
-      v?.remove();
-    });
-    preview.appendChild(v);
-  }
-  if (src.startsWith('data:') && src.length > MAX_BG_VIDEO_DATA_LEN) {
-    return;
-  }
-  if (v.getAttribute('src') !== src) {
-    try {
-      v.src = src;
-    } catch (error) {
-      console.error('[bg-video-preview] failed to set src', error);
-      v?.remove();
-      return;
-    }
-  }
-  void v.play().catch(() => undefined);
 }
 function syncSettingsDom(): void {
   const settings = getSettings();
@@ -2204,19 +2130,13 @@ function syncSettingsForm(modal: HTMLElement, s: AppSettings): void {
   setText('set-bg-opacity-val', s.bgImageOpacity + '%');
   const bgName = modal.querySelector('#bg-image-name');
   if (bgName) bgName.textContent = s.bgImage ? String(s.bgImage.split(/[\\/]/).pop()) : '未设置';
-  const bgVideoName = modal.querySelector('#bg-video-name');
-  if (bgVideoName) bgVideoName.textContent = s.bgVideo ? String(s.bgVideo.split(/[\\/]/).pop()) : '未设置';
   const bgOpacityInput = modal.querySelector<HTMLInputElement>('#set-bg-opacity');
   const bgClearBtn = modal.querySelector<HTMLButtonElement>('#btn-clear-bg');
-  const bgVideoClearBtn = modal.querySelector<HTMLButtonElement>('#btn-clear-bg-video');
-  const hasAnyBg = Boolean(s.bgImage || s.bgVideo);
-  if (bgOpacityInput) bgOpacityInput.disabled = !hasAnyBg;
+  if (bgOpacityInput) bgOpacityInput.disabled = !s.bgImage;
   if (bgClearBtn) bgClearBtn.disabled = !s.bgImage;
-  if (bgVideoClearBtn) bgVideoClearBtn.disabled = !s.bgVideo;
   setValue('set-bg-pos', s.bgImagePos);
   const bgPosSelect = modal.querySelector<HTMLSelectElement>('#set-bg-pos');
-  if (bgPosSelect) bgPosSelect.disabled = !hasAnyBg;
-  void syncBgPreviewVideo(modal);
+  if (bgPosSelect) bgPosSelect.disabled = !s.bgImage;
   setChecked('set-code-lines', s.codeLineNumbers);
   setValue('set-zebra', String(s.codeZebraOpacity));
   setText('set-zebra-val', s.codeZebraOpacity + '%');
@@ -2277,15 +2197,6 @@ function settingsViewHtml(): string {
               <span id="bg-image-name" class="bg-image-name">未设置</span>
             </div>
           </div>
-          <div class="settings-row">
-            <span>背景视频</span>
-            <div class="bg-image-controls">
-              <button type="button" id="btn-pick-bg-video" class="btn">选择视频</button>
-              <button type="button" id="btn-clear-bg-video" class="btn" disabled>移除</button>
-              <span id="bg-video-name" class="bg-image-name">未设置</span>
-            </div>
-          </div>
-          <p class="settings-hint">视频背景与背景图共用透明度、位置与左右淡出遮罩；设置视频时优先显示视频。建议 ≤10 秒、≤30MB。</p>
           <label class="settings-row">
             <span>背景透明度 <em id="set-bg-opacity-val">${s.bgImageOpacity}%</em></span>
             <input type="range" id="set-bg-opacity" min="0" max="100" step="1" value="${s.bgImageOpacity}" disabled />
@@ -2409,7 +2320,7 @@ function settingsViewHtml(): string {
             <button type="button" id="btn-theme-duplicate" class="btn" title="复制为新的主题">复制</button>
             <button type="button" id="btn-theme-new" class="btn" title="新建空主题">新建</button>
             <button type="button" id="btn-theme-delete" class="btn" title="删除当前主题（内置不可删）">删除</button>
-            <button type="button" id="btn-theme-reset" class="btn" title="恢复该主题的原始版本（导入/创建/复制那一刻的状态，含背景图与背景视频）">重置</button>
+            <button type="button" id="btn-theme-reset" class="btn" title="重置当前主题为基准默认（清除变量与自定义 CSS）">重置</button>
             <button type="button" id="btn-theme-help" class="btn" title="查看主题定制说明">说明</button>
             <span class="theme-toolbar-spacer"></span>
             <button type="button" id="btn-theme-export" class="btn" title="导出为 .mmtheme 文件">导出…</button>
@@ -2478,26 +2389,20 @@ function closeSettings(): void {
 
 function openSettings(): void {
   const view = $('settings-view');
-  try {
-    if (!settingsBuilt) {
-      view.innerHTML = settingsViewHtml();
-      bindSettingsEvents();
-      settingsBuilt = true;
-    }
-    settingsPrev = $('welcome').classList.contains('hidden') ? 'editor' : 'welcome';
-    hide($('welcome'));
-    hide($('editor-wrap'));
-    show(view);
-    refreshThemeSelect();
-    loadThemeIntoEditor(getActiveTheme());
-    switchSettingsPane('appearance');
-    syncSettingsForm(view, getSettings());
-    applyBgImageMask();
-  } catch (error) {
-    settingsBuilt = false;
-    console.error('[settings] openSettings failed', error);
-    toast('设置打开失败：' + String((error as Error)?.message ?? error));
+  if (!settingsBuilt) {
+    view.innerHTML = settingsViewHtml();
+    bindSettingsEvents();
+    settingsBuilt = true;
   }
+  settingsPrev = $('welcome').classList.contains('hidden') ? 'editor' : 'welcome';
+  hide($('welcome'));
+  hide($('editor-wrap'));
+  show(view);
+  refreshThemeSelect();
+  loadThemeIntoEditor(getActiveTheme());
+  switchSettingsPane('appearance');
+  syncSettingsForm(view, getSettings());
+  applyBgImageMask();
 }
 
 const THEME_SETTING_KEYS: ReadonlyArray<keyof AppSettings> = [
@@ -2565,26 +2470,20 @@ function syncThemeBgSettings(): void {
     bgImageOpacity: theme.bgImageOpacity,
     bgImagePos: theme.bgImagePos,
     bgImageData: theme.bgImageData,
-    bgVideo: theme.bgVideo,
-    bgVideoData: theme.bgVideoData,
   });
 }
 
 /** 外观面板修改背景图时写回当前主题（内置主题也写，保证切换主题背景跟随） */
-function setActiveThemeBg(patch: { bgImage?: string | null; bgImageData?: string | null; bgVideo?: string | null; bgVideoData?: string | null; bgImageOpacity?: number; bgImagePos?: 'left' | 'center' | 'right' }): void {
+function setActiveThemeBg(patch: { bgImage?: string | null; bgImageData?: string | null; bgImageOpacity?: number; bgImagePos?: 'left' | 'center' | 'right' }): void {
   const theme = getActiveTheme();
   if (patch.bgImage !== undefined) theme.bgImage = patch.bgImage;
   if (patch.bgImageData !== undefined) theme.bgImageData = patch.bgImageData;
-  if (patch.bgVideo !== undefined) theme.bgVideo = patch.bgVideo;
-  if (patch.bgVideoData !== undefined) theme.bgVideoData = patch.bgVideoData;
   if (patch.bgImageOpacity !== undefined) theme.bgImageOpacity = patch.bgImageOpacity;
   if (patch.bgImagePos !== undefined) theme.bgImagePos = patch.bgImagePos;
   saveTheme(theme);
   if (editedTheme && editedTheme.id === theme.id) {
     if (patch.bgImage !== undefined) editedTheme.bgImage = patch.bgImage;
     if (patch.bgImageData !== undefined) editedTheme.bgImageData = patch.bgImageData;
-    if (patch.bgVideo !== undefined) editedTheme.bgVideo = patch.bgVideo;
-    if (patch.bgVideoData !== undefined) editedTheme.bgVideoData = patch.bgVideoData;
     if (patch.bgImageOpacity !== undefined) editedTheme.bgImageOpacity = patch.bgImageOpacity;
     if (patch.bgImagePos !== undefined) editedTheme.bgImagePos = patch.bgImagePos;
   }
@@ -2663,22 +2562,7 @@ function renderThemeEditor(): void {
 }
 
 function loadThemeIntoEditor(theme: ThemeDef): void {
-  // 深拷贝当前值与原始快照：编辑当前值不会污染原始版本
-  const baseline = theme.baseline
-    ? { ...theme.baseline, variables: { ...theme.baseline.variables } }
-    : {
-        name: theme.name,
-        base: theme.base,
-        variables: { ...theme.variables },
-        customCss: theme.customCss,
-        bgImage: theme.bgImage,
-        bgImageOpacity: theme.bgImageOpacity,
-        bgImagePos: theme.bgImagePos,
-        bgImageData: theme.bgImageData,
-        bgVideo: theme.bgVideo,
-        bgVideoData: theme.bgVideoData,
-      };
-  editedTheme = { ...theme, variables: { ...theme.variables }, baseline };
+  editedTheme = { ...theme, variables: { ...theme.variables } };
   applyTheme(editedTheme);
   renderThemeEditor();
   const select = document.getElementById('theme-select') as HTMLSelectElement | null;
@@ -2779,7 +2663,6 @@ async function exportThemeFlow(): Promise<void> {
     saveEditedTheme();
     const settings = collectThemeSettings();
     let bgImageBase64: string | null = null;
-    let bgVideoBase64: string | null = null;
     const s = getSettings();
     if (s.bgImageData) {
       bgImageBase64 = s.bgImageData;
@@ -2793,18 +2676,6 @@ async function exportThemeFlow(): Promise<void> {
         }
       }
     }
-    if (s.bgVideoData) {
-      bgVideoBase64 = s.bgVideoData;
-    } else if (s.bgVideo) {
-      const r = await window.api.readVideoDataUrl(s.bgVideo, 30 * 1024 * 1024);
-      if (r?.data) {
-        bgVideoBase64 = r.data;
-      } else if (r?.tooLarge) {
-        toast('背景视频超过 200MB，导出时未包含视频');
-      } else if (r) {
-        toast('背景视频超过 30MB，导出时未包含视频');
-      }
-    }
     const result = await window.api.exportTheme({
       name: editedTheme.name,
       base: editedTheme.base,
@@ -2812,7 +2683,6 @@ async function exportThemeFlow(): Promise<void> {
       customCss: editedTheme.customCss,
       settings,
       bgImageBase64,
-      bgVideoBase64,
     });
     if (!result.canceled) {
       toast(result.filePath ? '主题已导出' : '导出失败');
@@ -2840,10 +2710,6 @@ async function importThemeFlow(): Promise<void> {
     theme.bgImageOpacity = typeof imported.bgImageOpacity === 'number' ? imported.bgImageOpacity : 20;
     theme.bgImagePos = imported.bgImagePos === 'left' || imported.bgImagePos === 'right' ? imported.bgImagePos : 'center';
     theme.bgImageData = result.bgImageBase64 && result.bgImageBase64.length <= MAX_BG_DATA_LEN ? result.bgImageBase64 : null;
-    theme.bgVideo = imported.bgVideo ?? null;
-    theme.bgVideoData = result.bgVideoBase64 && result.bgVideoBase64.length <= MAX_BG_VIDEO_DATA_LEN ? result.bgVideoBase64 : null;
-    // 导入成功那一刻 = 原始版本，点「重置」可还原到导入状态
-    setBaselineToCurrent(theme);
     saveTheme(theme);
     loadThemeIntoEditor(theme);
     refreshThemeSelect();
@@ -3421,7 +3287,6 @@ async function buildThemePublishPayload(): Promise<{
   const settings = collectThemeSettings();
   settings.theme = base;
   let bgImageBase64: string | null = null;
-  let bgVideoBase64: string | null = null;
   const s = getSettings();
   if (s.bgImageData) {
     bgImageBase64 = s.bgImageData;
@@ -3429,22 +3294,15 @@ async function buildThemePublishPayload(): Promise<{
     const dataUrl = await window.api.readImageDataUrl(s.bgImage);
     if (dataUrl && dataUrl.length <= 8 * 1024 * 1024) bgImageBase64 = dataUrl;
   }
-  if (s.bgVideoData) {
-    bgVideoBase64 = s.bgVideoData;
-  } else if (s.bgVideo) {
-    const r = await window.api.readVideoDataUrl(s.bgVideo, 30 * 1024 * 1024);
-    if (r?.data) bgVideoBase64 = r.data;
-  }
   const themeJson = {
     format: 'mymarkdown-theme',
-    version: 3,
+    version: 2,
     name,
     base,
     variables: editedTheme.variables,
     customCss,
     settings,
     bgImageBase64,
-    bgVideoBase64,
   };
   const safeName = name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'MyMarkdown主题';
   const preview = await buildThemePreviewImage(name);
@@ -3599,16 +3457,12 @@ function bindSettingsEvents(): void {
   });
   $('btn-theme-reset')?.addEventListener('click', () => {
     if (!editedTheme) return;
-    // 恢复为该主题的原始版本（导入/创建/复制那一刻的状态）
-    restoreThemeBaseline(editedTheme);
+    editedTheme.variables = {};
+    editedTheme.customCss = '';
     saveTheme(editedTheme);
     applyTheme(editedTheme);
-    if (getActiveTheme().id === editedTheme.id) {
-      syncThemeBgSettings();
-      syncSettingsDom();
-    }
     renderThemeEditor();
-    toast('已重置为该主题的原始版本');
+    toast('已重置为基准默认');
   });
   $('btn-theme-export')?.addEventListener('click', () => {
     void exportThemeFlow();
@@ -3683,8 +3537,7 @@ function bindSettingsEvents(): void {
   $('btn-settings-reset').addEventListener('click', () => {
     const keepThemeId = getActiveTheme().id;
     resetSettings();
-    // 所有主题恢复到各自的原始版本（保留主题列表与激活状态）
-    resetAllThemes();
+    // 重置全部设置不影响主题：保留当前激活主题，不清除已导入的主题
     const keepTheme = getTheme(keepThemeId) ?? getActiveTheme();
     activateTheme(keepTheme.id);
     saveSettings({ theme: keepTheme.base });
@@ -3693,14 +3546,14 @@ function bindSettingsEvents(): void {
     syncThemeBgSettings();
     syncSettingsForm($('settings-view'), getSettings());
     syncSettingsDom();
-    toast('已重置全部设置，主题已还原为原始版本');
+    toast('已重置全部设置');
   });
   document.querySelectorAll('.btn-reset-group').forEach((btn) => {
     btn.addEventListener('click', () => {
       const group = (btn as HTMLElement).dataset.group as SettingsGroup;
       resetSettingsGroup(group);
       if (group === 'appearance') {
-        setActiveThemeBg({ bgImage: null, bgImageData: null, bgVideo: null, bgVideoData: null, bgImageOpacity: 20, bgImagePos: 'center' });
+        setActiveThemeBg({ bgImage: null, bgImageData: null, bgImageOpacity: 20, bgImagePos: 'center' });
         syncThemeBgSettings();
       }
       syncSettingsForm($('settings-view'), getSettings());
@@ -3744,32 +3597,6 @@ function bindSettingsEvents(): void {
   modal.querySelector('#btn-clear-bg')?.addEventListener('click', () => {
     saveSettings({ bgImage: null, bgImageData: null });
     setActiveThemeBg({ bgImage: null, bgImageData: null });
-    syncSettingsForm($('settings-view'), getSettings());
-  });
-  modal.querySelector('#btn-pick-bg-video')?.addEventListener('click', async () => {
-    const picked = await window.api.openVideo();
-    if (picked) {
-      let bgVideoData: string | null = null;
-      const result = await window.api.readVideoDataUrl(picked);
-      if (!result) {
-        toast('读取视频失败，请重试');
-        return;
-      }
-      if (result.embeddable && result.data) {
-        bgVideoData = result.data;
-      } else if (result.tooLarge) {
-        toast('视频超过 200MB，仅保存路径引用（导出主题时不包含视频）');
-      } else {
-        toast('背景视频较大，仅保存路径引用（导出主题时会一并打包）');
-      }
-      saveSettings({ bgVideo: picked, bgVideoData });
-      setActiveThemeBg({ bgVideo: picked, bgVideoData });
-      syncSettingsForm($('settings-view'), getSettings());
-    }
-  });
-  modal.querySelector('#btn-clear-bg-video')?.addEventListener('click', () => {
-    saveSettings({ bgVideo: null, bgVideoData: null });
-    setActiveThemeBg({ bgVideo: null, bgVideoData: null });
     syncSettingsForm($('settings-view'), getSettings());
   });
   modal.querySelector('#set-bg-opacity')?.addEventListener('input', (event) => {
@@ -4090,10 +3917,6 @@ function bindEvents(): void {
 }
 
 async function init(): Promise<void> {
-  // 全局 toast 转发：settings.ts 等模块通过自定义事件弹提示
-  window.addEventListener('app-toast', ((event) => {
-    toast(String((event as CustomEvent).detail));
-  }) as EventListener);
   if (getActiveTheme().base !== getSettings().theme) {
     activateTheme(getSettings().theme === 'dark' ? 'builtin-dark' : 'builtin-light');
   } else {
@@ -4146,7 +3969,6 @@ async function init(): Promise<void> {
   }
   syncThemeBgSettings();
   syncSettingsDom();
-  bindBgVideoVisibility();
   syncAutoSave();
   applyBgImageMask();
   lastSyncedThemeId = getActiveTheme().id;
@@ -4166,9 +3988,7 @@ async function init(): Promise<void> {
     syncAutoSave();
     applyBgImageMask();
   });
-  console.log('[init] creating editor');
   state.editor = await createEditor($('editor'), { onMarkdownChange: handleMarkdownChange });
-  console.log('[init] editor created');
   bindEvents();
   updateFormatBar();
   const lastFolder = localStorage.getItem('lastFolder');
@@ -4206,6 +4026,4 @@ async function init(): Promise<void> {
 
 window.api.onOpenFile((path) => handleOsOpenFile(path));
 initUpdater(window.api);
-void init().catch((error) => {
-  console.error('[init] failed', error);
-});
+void init();

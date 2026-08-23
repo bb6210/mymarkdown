@@ -37,6 +37,40 @@ export interface ThemeExportPayload {
   bgImageBase64: string | null;
 }
 
+export interface CommunityAuth {
+  baseUrl: string;
+  username: string;
+  password: string;
+  token: string;
+}
+
+export interface CommunityPublishPayload {
+  type: 'doc' | 'theme';
+  title?: string;
+  content?: string;
+  images?: Array<{ name: string; data: string }>;
+  name?: string;
+  description?: string;
+  baseTheme?: 'light' | 'dark';
+  fileName?: string;
+  fileData?: string;
+  previewName?: string;
+  previewData?: string;
+}
+
+export interface CommunityLoginResult {
+  ok: boolean;
+  token?: string;
+  error?: string;
+}
+
+export interface CommunityPublishResult {
+  ok: boolean;
+  error?: string;
+  data?: Record<string, unknown>;
+  needLogin?: boolean;
+}
+
 export interface ThemeImportResult {
   canceled: boolean;
   error?: string;
@@ -45,8 +79,24 @@ export interface ThemeImportResult {
   variables?: Record<string, string>;
   customCss?: string;
   settings?: Record<string, unknown>;
+  /** 主题文件里内嵌的背景图（data URL），原样透传给主题数据 */
+  bgImageBase64?: string | null;
 }
 
+export type UpdateEventType =
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error';
+
+export interface UpdateEvent {
+  type: UpdateEventType;
+  version?: string;
+  percent?: number;
+  message?: string;
+}
 export interface MarkdownApi {
   openFolder(): Promise<string | null>;
   readDir(dir: string): Promise<FileEntry[]>;
@@ -69,6 +119,16 @@ export interface MarkdownApi {
   copyImageToClipboard(filePath: string): Promise<boolean>;
   openImageExternally(filePath: string): Promise<void>;
   writeImageFile(filePath: string, data: Uint8Array): Promise<boolean>;
+  communityLogin(auth: CommunityAuth): Promise<CommunityLoginResult>;
+  saveCommunityAuth(auth: CommunityAuth): Promise<boolean>;
+  loadCommunityAuth(): Promise<CommunityAuth | null>;
+  clearCommunityAuth(): Promise<boolean>;
+  publishToCommunity(auth: CommunityAuth, payload: CommunityPublishPayload): Promise<CommunityPublishResult>;
+  openCommunityBrowser(url: string): Promise<void>;
+  checkForUpdates(): Promise<boolean>;
+  downloadUpdate(): Promise<boolean>;
+  quitAndInstall(): Promise<void>;
+  onUpdate(callback: (event: UpdateEvent) => void): void;
   onMenu(callback: (action: string) => void): void;
   onOpenFile(callback: (path: string) => void): void;
 }

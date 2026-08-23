@@ -14,13 +14,16 @@ import type {
   ThemeExportPayload,
   ThemeImportResult,
   UpdateEvent,
+  VideoReadResult,
+  VideoFileResult,
 } from '../shared/api';
+import { MAX_BG_VIDEO_DATA_LEN, MAX_BG_MEDIA_FILE_BYTES } from '../shared/api';
 
 const APP_SCHEME = 'app';
 
 // 必须在使用 app 之前注册自定义协议（standard + secure，使 app:// 具备与 http 一致的来源语义）
 protocol.registerSchemesAsPrivileged([
-  { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+  { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
 ]);
 
 let mainWindow: BrowserWindow | null = null;
@@ -183,6 +186,18 @@ const MIME_TYPES: Record<string, string> = {
   '.otf': 'font/otf',
   '.txt': 'text/plain; charset=utf-8',
   '.map': 'application/json; charset=utf-8',
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.webm': 'video/webm',
+  '.ogv': 'video/ogg',
+  '.mov': 'video/quicktime',
+  '.avi': 'video/x-msvideo',
+  '.mkv': 'video/x-matroska',
+  '.flv': 'video/x-flv',
+  '.wmv': 'video/x-ms-wmv',
+  '.mpeg': 'video/mpeg',
+  '.mpg': 'video/mpeg',
+  '.3gp': 'video/3gpp',
 };
 
 function registerAppProtocol(): void {
@@ -199,10 +214,52 @@ function registerAppProtocol(): void {
     if (pathname.startsWith(FS_PREFIX)) {
       const filePath = pathname.slice(FS_PREFIX.length);
       try {
-        const data = await fs.readFile(filePath);
+        const st = await fs.stat(filePath);
         const ext = path.extname(filePath).toLowerCase();
         const type = MIME_TYPES[ext] ?? 'application/octet-stream';
-        return new Response(data, { headers: { 'Content-Type': type, 'Cache-Control': 'no-store' } });
+        // 支持 Range 分段响应：播放 mp4 等视频时必须 seek（moov 元数据常在文件末尾）
+        const range = request.headers.get('range');
+        if (range) {
+          const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+          const size = st.size;
+          let start = 0;
+          let end = size - 1;
+          if (m) {
+            if (m[1] !== '') start = Number(m[1]);
+            if (m[2] !== '') end = Number(m[2]);
+          }
+          if (start === 0) {
+            console.log('[app-protocol:fs] media start', filePath, 'size=' + size, 'range=' + range.trim());
+          }
+          if (Number.isFinite(start) && Number.isFinite(end) && start >= 0 && start < size) {
+            if (end >= size) end = size - 1;
+            if (end < start) return new Response('Range Not Satisfiable', { status: 416 });
+            // 限制单次响应体积：超大视频（如 200MB）不能被一次读进内存，客户端会继续按段请求
+            const MAX_RANGE_BYTES = 8 * 1024 * 1024;
+            if (end - start + 1 > MAX_RANGE_BYTES) end = start + MAX_RANGE_BYTES - 1;
+            const buf = Buffer.alloc(end - start + 1);
+            const fh = await fs.open(filePath, 'r');
+            try {
+              await fh.read(buf, 0, buf.length, start);
+            } finally {
+              await fh.close();
+            }
+            return new Response(buf, {
+              status: 206,
+              headers: {
+                'Content-Type': type,
+                'Content-Range': 'bytes ' + start + '-' + end + '/' + size,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': String(buf.length),
+                'Cache-Control': 'no-store',
+              },
+            });
+          }
+        }
+        const data = await fs.readFile(filePath);
+        return new Response(data, {
+          headers: { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store' },
+        });
       } catch (error) {
         console.error('[app-protocol:fs] read failed:', filePath, error);
         return new Response('Not Found', { status: 404 });
@@ -501,6 +558,8 @@ function registerIpc(): void {
 
   ipcMain.handle('fs:readImageDataUrl', async (_event, filePath: string): Promise<string | null> => {
     try {
+      const st = await fs.stat(filePath);
+      if (!st.isFile() || st.size > MAX_BG_MEDIA_FILE_BYTES) return null;
       const data = await fs.readFile(filePath);
       const ext = path.extname(filePath).toLowerCase();
       const mime = MIME_TYPES[ext];
@@ -512,6 +571,48 @@ function registerIpc(): void {
     }
   });
 
+  ipcMain.handle('fs:readVideoDataUrl', async (_event, filePath: string, maxBytes?: number): Promise<VideoReadResult | null> => {
+    const limit = typeof maxBytes === 'number' && maxBytes > 0 ? maxBytes : MAX_BG_VIDEO_DATA_LEN;
+    try {
+      const st = await fs.stat(filePath);
+      if (!st.isFile()) return null;
+      // 超过文件体积硬上限：直接拒绝，避免超大 base64 字符串跨 IPC 拖垮渲染进程
+      if (st.size > MAX_BG_MEDIA_FILE_BYTES) {
+        return { data: null, embeddable: false, tooLarge: true, size: st.size };
+      }
+      // 超过本次读取上限（默认内嵌上限 4MB）：不读取文件内容，仅返回体积信息
+      if (st.size > limit) {
+        return { data: null, embeddable: false, tooLarge: false, size: st.size };
+      }
+      const data = await fs.readFile(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+      const mime = MIME_TYPES[ext];
+      if (!mime || !mime.startsWith('video/')) return { data: null, embeddable: false, tooLarge: false, size: st.size };
+      const dataUrl = 'data:' + mime.split(';')[0] + ';base64,' + data.toString('base64');
+      if (dataUrl.length > limit) return { data: null, embeddable: false, tooLarge: false, size: st.size };
+      return { data: dataUrl, embeddable: st.size <= MAX_BG_VIDEO_DATA_LEN, tooLarge: false, size: st.size };
+    } catch (error) {
+      console.error('[fs:readVideoDataUrl]', error);
+      return null;
+    }
+  });
+
+
+  ipcMain.handle('fs:readVideoFile', async (_event, filePath: string, maxBytes?: number): Promise<VideoFileResult | null> => {
+    const limit = typeof maxBytes === 'number' && maxBytes > 0 ? maxBytes : MAX_BG_MEDIA_FILE_BYTES;
+    try {
+      const st = await fs.stat(filePath);
+      if (!st.isFile() || st.size > limit) return null;
+      const data = await fs.readFile(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+      const mime = MIME_TYPES[ext];
+      if (!mime || !mime.startsWith('video/')) return null;
+      return { name: path.basename(filePath), type: mime.split(';')[0], data, size: st.size };
+    } catch (error) {
+      console.error('[fs:readVideoFile]', error);
+      return null;
+    }
+  });
   ipcMain.handle('dialog:openImage', async (): Promise<string | null> => {
     const win = mainWindow;
     if (!win) return null;
@@ -527,6 +628,24 @@ function registerIpc(): void {
             'jxl', 'psd', 'xcf', 'exr', 'hdr', 'pcx', 'tga', 'dds', 'pnm', 'pgm', 'ppm', 'pbm', 'pam',
             'qoi', 'wbmp', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'rw2', 'orf', 'pef', 'srw', 'raf',
           ],
+        },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle('dialog:openVideo', async (): Promise<string | null> => {
+    const win = mainWindow;
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      title: '选择背景视频',
+      properties: ['openFile'],
+      filters: [
+        {
+          name: '视频',
+          extensions: ['mp4', 'm4v', 'webm', 'ogv', 'mov', 'avi', 'mkv', 'flv', 'wmv', 'mpeg', 'mpg', '3gp'],
         },
         { name: '所有文件', extensions: ['*'] },
       ],
@@ -808,7 +927,7 @@ function registerIpc(): void {
     if (result.canceled || !result.filePath) return { canceled: true, filePath: null };
     const theme = {
       format: 'mymarkdown-theme',
-      version: 2,
+      version: 3,
       name: safeName,
       base: payload.base ?? 'light',
       variables: payload.variables ?? {},
@@ -817,6 +936,7 @@ function registerIpc(): void {
       exportedAt: new Date().toISOString(),
       settings: payload.settings ?? {},
       bgImageBase64: payload.bgImageBase64 ?? null,
+      bgVideoBase64: payload.bgVideoBase64 ?? null,
     };
     try {
       await fs.writeFile(result.filePath, JSON.stringify(theme, null, 2), 'utf-8');
@@ -851,6 +971,7 @@ function registerIpc(): void {
         customCss?: unknown;
         settings?: unknown;
         bgImageBase64?: unknown;
+        bgVideoBase64?: unknown;
       };
       if (data.format !== 'mymarkdown-theme') {
         return { canceled: false, error: '不是有效的 MyMarkdown 样式文件' };
@@ -872,6 +993,18 @@ function registerIpc(): void {
           settings.bgImage = bgPath;
         }
       }
+      if (typeof data.bgVideoBase64 === 'string' && data.bgVideoBase64.startsWith('data:video/')) {
+        const match = /^data:video\/([a-zA-Z0-9.+-]+);base64,(.+)$/s.exec(data.bgVideoBase64);
+        if (match) {
+          let ext = match[1].toLowerCase();
+          if (!/^[a-z0-9]{1,8}$/.test(ext)) ext = 'mp4';
+          const themesDir = path.join(app.getPath('userData'), 'themes');
+          await fs.mkdir(themesDir, { recursive: true });
+          const bgPath = path.join(themesDir, 'bg-video-' + Date.now() + '.' + ext);
+          await fs.writeFile(bgPath, Buffer.from(match[2], 'base64'));
+          settings.bgVideo = bgPath;
+        }
+      }
       return {
         canceled: false,
         name: typeof data.name === 'string' ? data.name : '未命名样式',
@@ -888,6 +1021,7 @@ function registerIpc(): void {
         customCss: typeof data.customCss === 'string' ? data.customCss : '',
         settings,
         bgImageBase64: typeof data.bgImageBase64 === 'string' ? data.bgImageBase64 : null,
+        bgVideoBase64: typeof data.bgVideoBase64 === 'string' ? data.bgVideoBase64 : null,
       };
     } catch (error) {
       console.error('[theme:import]', error);

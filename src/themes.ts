@@ -3,6 +3,25 @@
  * 变量通过 <style id="mm-theme-vars"> 注入，自定义 CSS 通过
  * <style id="mm-theme-custom-css"> 注入，与设置面板的计算变量互不干扰。 */
 
+import { MAX_BG_VIDEO_DATA_LEN } from '../shared/api';
+export { MAX_BG_VIDEO_DATA_LEN };
+
+export interface ThemeBaseline {
+  /** 原始快照中的主题名（重置时恢复） */
+  name: string;
+  base: 'light' | 'dark';
+  /** 原始快照中的变量（重置时恢复） */
+  variables: Record<string, string>;
+  /** 原始快照中的自定义 CSS（重置时恢复） */
+  customCss: string;
+  bgImage: string | null;
+  bgImageOpacity: number;
+  bgImagePos: 'left' | 'center' | 'right';
+  bgImageData: string | null;
+  bgVideo: string | null;
+  bgVideoData: string | null;
+}
+
 export interface ThemeDef {
   id: string;
   name: string;
@@ -22,6 +41,12 @@ export interface ThemeDef {
   bgImagePos: 'left' | 'center' | 'right';
   /** 背景图字节（data URL），文件丢失时兜底显示用；过大时为 null */
   bgImageData: string | null;
+  /** 主题自带背景视频绝对路径（null=无背景视频） */
+  bgVideo: string | null;
+  /** 背景视频字节（data URL），文件丢失时兜底显示用；过大时为 null */
+  bgVideoData: string | null;
+  /** 原始快照（导入/创建/复制那一刻的状态）：点「重置」时恢复此版本 */
+  baseline: ThemeBaseline;
 }
 
 export const BUILTIN_LIGHT_ID = 'builtin-light';
@@ -83,6 +108,9 @@ export const THEME_VAR_LABELS: Record<string, string> = {
 /** 主题内嵌背景图的最大 data URL 长度（超过则不内嵌，避免撑爆 localStorage） */
 export const MAX_BG_DATA_LEN = 6 * 1024 * 1024;
 
+/** 主题内嵌背景视频的最大 data URL 长度（localStorage 容量有限，仅小视频内嵌；导出文件时另行读磁盘） */
+// MAX_BG_VIDEO_DATA_LEN 定义见 ../shared/api（主进程与渲染进程共用，避免两处不一致）
+
 const STORAGE_KEY = 'mm-themes';
 const VARS_STYLE_ID = 'mm-theme-vars';
 const CSS_STYLE_ID = 'mm-theme-custom-css';
@@ -93,13 +121,23 @@ interface ThemeStore {
 }
 
 function defaultStore(): ThemeStore {
-  return {
-    activeId: BUILTIN_LIGHT_ID,
-    list: [
-      { id: BUILTIN_LIGHT_ID, name: '浅色', base: 'light', variables: {}, customCss: '', builtin: true, updatedAt: 0, bgImage: null, bgImageOpacity: 20, bgImagePos: 'center', bgImageData: null },
-      { id: BUILTIN_DARK_ID, name: '深色', base: 'dark', variables: {}, customCss: '', builtin: true, updatedAt: 0, bgImage: null, bgImageOpacity: 20, bgImagePos: 'center', bgImageData: null },
-    ],
+  const light: ThemeDef = {
+    id: BUILTIN_LIGHT_ID, name: '浅色', base: 'light', variables: {}, customCss: '', builtin: true, updatedAt: 0,
+    bgImage: null, bgImageOpacity: 20, bgImagePos: 'center', bgImageData: null, bgVideo: null, bgVideoData: null,
+    baseline: {
+      name: '浅色', base: 'light', variables: {}, customCss: '',
+      bgImage: null, bgImageOpacity: 20, bgImagePos: 'center', bgImageData: null, bgVideo: null, bgVideoData: null,
+    },
   };
+  const dark: ThemeDef = {
+    id: BUILTIN_DARK_ID, name: '深色', base: 'dark', variables: {}, customCss: '', builtin: true, updatedAt: 0,
+    bgImage: null, bgImageOpacity: 20, bgImagePos: 'center', bgImageData: null, bgVideo: null, bgVideoData: null,
+    baseline: {
+      name: '深色', base: 'dark', variables: {}, customCss: '',
+      bgImage: null, bgImageOpacity: 20, bgImagePos: 'center', bgImageData: null, bgVideo: null, bgVideoData: null,
+    },
+  };
+  return { activeId: BUILTIN_LIGHT_ID, list: [light, dark] };
 }
 
 function makeId(): string {
@@ -116,7 +154,11 @@ function persist(): void {
     // 配额不足时去掉内嵌背景字节，保证主题列表仍能保存
     try {
       if (cached) {
-        for (const item of cached.list) item.bgImageData = null;
+        for (const item of cached.list) {
+          item.bgImageData = null;
+          item.bgVideoData = null;
+          if (item.baseline) { item.baseline.bgImageData = null; item.baseline.bgVideoData = null; }
+        }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(cached));
       }
     } catch {
@@ -154,6 +196,69 @@ function normalizeBgImageData(raw: unknown): string | null {
   return typeof raw === 'string' && raw.startsWith('data:image/') && raw.length <= MAX_BG_DATA_LEN ? raw : null;
 }
 
+function normalizeBgVideo(raw: unknown): string | null {
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+}
+
+function normalizeBgVideoData(raw: unknown): string | null {
+  return typeof raw === 'string' && raw.startsWith('data:video/') && raw.length <= MAX_BG_VIDEO_DATA_LEN ? raw : null;
+}
+
+/** 把主题当前值生成原始快照（深拷贝 variables） */
+function toBaseline(theme: Pick<ThemeDef, 'name' | 'base' | 'variables' | 'customCss' | 'bgImage' | 'bgImageOpacity' | 'bgImagePos' | 'bgImageData' | 'bgVideo' | 'bgVideoData'>): ThemeBaseline {
+  return {
+    name: theme.name,
+    base: theme.base,
+    variables: { ...theme.variables },
+    customCss: theme.customCss,
+    bgImage: theme.bgImage,
+    bgImageOpacity: theme.bgImageOpacity,
+    bgImagePos: theme.bgImagePos,
+    bgImageData: theme.bgImageData,
+    bgVideo: theme.bgVideo,
+    bgVideoData: theme.bgVideoData,
+  };
+}
+
+/** 从存储读取原始快照；结构非法时返回 null（调用方用当前值兜底） */
+function normalizeBaseline(raw: unknown): ThemeBaseline | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const b = raw as Record<string, unknown>;
+  if (typeof b.name !== 'string' && typeof b.customCss !== 'string' && typeof b.variables !== 'object') return null;
+  return {
+    name: typeof b.name === 'string' && b.name.trim() ? b.name : '未命名主题',
+    base: b.base === 'dark' ? 'dark' : 'light',
+    variables: normalizeVars(b.variables),
+    customCss: typeof b.customCss === 'string' ? b.customCss : '',
+    bgImage: normalizeBgImage(b.bgImage),
+    bgImageOpacity: normalizeBgOpacity(b.bgImageOpacity),
+    bgImagePos: normalizeBgPos(b.bgImagePos),
+    bgImageData: normalizeBgImageData(b.bgImageData),
+    bgVideo: normalizeBgVideo(b.bgVideo),
+    bgVideoData: normalizeBgVideoData(b.bgVideoData),
+  };
+}
+
+/** 把单个主题恢复为原始版本（原地修改，不持久化） */
+export function restoreThemeBaseline(theme: ThemeDef): void {
+  const baseline = normalizeBaseline(theme.baseline) ?? toBaseline(theme);
+  theme.name = baseline.name;
+  theme.base = baseline.base;
+  theme.variables = { ...baseline.variables };
+  theme.customCss = baseline.customCss;
+  theme.bgImage = baseline.bgImage;
+  theme.bgImageOpacity = baseline.bgImageOpacity;
+  theme.bgImagePos = baseline.bgImagePos;
+  theme.bgImageData = baseline.bgImageData;
+  theme.bgVideo = baseline.bgVideo;
+  theme.bgVideoData = baseline.bgVideoData;
+}
+
+/** 以主题当前值作为原始快照（导入主题成功后调用，保证重置可还原到导入时刻） */
+export function setBaselineToCurrent(theme: ThemeDef): void {
+  theme.baseline = toBaseline(theme);
+}
+
 export function getThemeStore(): { activeId: string; list: ThemeDef[] } {
   if (cached) return cached;
   let raw: unknown = null;
@@ -171,18 +276,34 @@ export function getThemeStore(): { activeId: string; list: ThemeDef[] } {
       store.list = [];
       for (const item of r.list as Array<Record<string, unknown>>) {
         if (!item || typeof item.id !== 'string') continue;
+        const name = typeof item.name === 'string' && item.name.trim() ? item.name : '未命名主题';
+        const base = item.base === 'dark' ? 'dark' : 'light';
+        const variables = normalizeVars(item.variables);
+        const customCss = typeof item.customCss === 'string' ? item.customCss : '';
+        const bgImage = normalizeBgImage(item.bgImage);
+        const bgImageOpacity = normalizeBgOpacity(item.bgImageOpacity);
+        const bgImagePos = normalizeBgPos(item.bgImagePos);
+        const bgImageData = normalizeBgImageData(item.bgImageData);
+        const bgVideo = normalizeBgVideo(item.bgVideo);
+        const bgVideoData = normalizeBgVideoData(item.bgVideoData);
         store.list.push({
           id: item.id,
-          name: typeof item.name === 'string' && item.name.trim() ? item.name : '未命名主题',
-          base: item.base === 'dark' ? 'dark' : 'light',
-          variables: normalizeVars(item.variables),
-          customCss: typeof item.customCss === 'string' ? item.customCss : '',
+          name,
+          base,
+          variables,
+          customCss,
           builtin: item.builtin === true,
           updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : 0,
-          bgImage: normalizeBgImage(item.bgImage),
-          bgImageOpacity: normalizeBgOpacity(item.bgImageOpacity),
-          bgImagePos: normalizeBgPos(item.bgImagePos),
-          bgImageData: normalizeBgImageData(item.bgImageData),
+          bgImage,
+          bgImageOpacity,
+          bgImagePos,
+          bgImageData,
+          bgVideo,
+          bgVideoData,
+          baseline: normalizeBaseline(item.baseline) ?? {
+            name, base, variables: { ...variables }, customCss,
+            bgImage, bgImageOpacity, bgImagePos, bgImageData, bgVideo, bgVideoData,
+          },
         });
       }
       const defaults = defaultStore().list;
@@ -220,6 +341,9 @@ export function saveTheme(theme: ThemeDef): void {
     bgImageOpacity: normalizeBgOpacity(theme.bgImageOpacity),
     bgImagePos: normalizeBgPos(theme.bgImagePos),
     bgImageData: normalizeBgImageData(theme.bgImageData),
+    bgVideo: normalizeBgVideo(theme.bgVideo),
+    bgVideoData: normalizeBgVideoData(theme.bgVideoData),
+    baseline: normalizeBaseline(theme.baseline) ?? toBaseline(theme),
   };
   const idx = store.list.findIndex((t) => t.id === theme.id);
   if (idx >= 0) store.list[idx] = copy;
@@ -228,18 +352,25 @@ export function saveTheme(theme: ThemeDef): void {
 }
 
 export function createTheme(name: string, base: 'light' | 'dark', source?: ThemeDef): ThemeDef {
-  const theme: ThemeDef = {
-    id: makeId(),
+  // 当前值：新建为空；复制时继承源主题的当前值（复制那一刻的状态）
+  const current = {
     name: name.trim() || '新主题',
     base,
     variables: source ? { ...source.variables } : {},
     customCss: source?.customCss ?? '',
-    builtin: false,
-    updatedAt: Date.now(),
     bgImage: source?.bgImage ?? null,
     bgImageOpacity: source?.bgImageOpacity ?? 20,
     bgImagePos: source?.bgImagePos ?? 'center',
     bgImageData: source?.bgImageData ?? null,
+    bgVideo: source?.bgVideo ?? null,
+    bgVideoData: source?.bgVideoData ?? null,
+  };
+  const theme: ThemeDef = {
+    id: makeId(),
+    ...current,
+    builtin: false,
+    updatedAt: Date.now(),
+    baseline: toBaseline(current),
   };
   saveTheme(theme);
   return theme;
@@ -255,11 +386,10 @@ export function deleteTheme(id: string): boolean {
   return true;
 }
 
+/** 所有主题恢复到各自的原始版本（保留主题列表与激活状态） */
 export function resetAllThemes(): void {
   const store = getThemeStore();
-  const defaults = defaultStore();
-  store.list = defaults.list;
-  store.activeId = defaults.activeId;
+  for (const theme of store.list) restoreThemeBaseline(theme);
   persist();
 }
 

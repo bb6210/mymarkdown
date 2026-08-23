@@ -1,6 +1,6 @@
 {
   "name": "mymarkdown",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "MyMarkdown - Typora 风格的所见即所得 Markdown 桌面编辑器",
   "main": "dist-electron/electron/main.js",
   "private": true,
